@@ -17,8 +17,8 @@ HeroY = 590 ; Y-position can be the same for all classes
 ; Settings
 Name = Helene
 Hero := Sorceress
-Hardcore := True
-Classic := False
+Hardcore := False
+Classic := True
 DeleteHero := False
 
 ; Timers
@@ -27,6 +27,7 @@ LoadingDelay = 500
 DeleteDelay = 5025
 
 ; Hotkeys
+LiveSplit = F4
 Hotkey, f7, Config
 Hotkey, f8, Load
 Hotkey, f9, Reset
@@ -37,6 +38,7 @@ Return
 */
 
 Reset:
+    Send {%LiveSplit%}
     BlockInput, On
 
     If DeleteHero
@@ -70,11 +72,11 @@ Reset:
 
     If Classic
     {
-        MouseClick, left, 1055, 998 ; Click on Pre-Expansion (Classic)
+        MouseClick, left, 1014, 1005 ; Click on Pre-Expansion (Classic)
     }
 
     If Hardcore {
-        MouseClick, left, 975, 1000 ; Click on Hardcore
+        MouseClick, left, 941, 1005 ; Click on Hardcore
         MouseClick, left, 1775, 1050 ; Click on "Create"
         Sleep, %Delay%
         MouseClick, left, 825, 625 ; Click on "OK" to confirm Hardcore
@@ -84,7 +86,7 @@ Reset:
     {
         MouseClick, left, 1775, 1050 ; Click on "Create"
     }
-
+    Send {F3}
     BlockInput Off
 Return
 
