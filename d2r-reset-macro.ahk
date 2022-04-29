@@ -1,101 +1,116 @@
-/*
-    Settings
-*/
+FileAppend,, settings.ini, CP0
+CoordMode, Mouse, Client
 
-; Hero positions
-; Use Config hotkey (F7 by default) while inside D2R window to get mouse X and Y positions
-; Hover the mouse on top of the classes and paste X positions for all classes
-Amazon = 404
-Assassin = 597
-Necromancer = 782
-Barbarian = 959
-Paladin = 1167
-Sorceress = 1380
-Druid = 1555
-HeroY = 590 ; Y-position can be the same for all classes
+IniRead, macroHotkey, settings.ini, Hotkeys, macro
+IniRead, loadHotkey, settings.ini, Hotkeys, load
 
-; Settings
-Name = Helene
-Hero := Sorceress
-Hardcore := False
-Classic := True
-DeleteHero := False
-
-; Timers
-Delay = 100
-LoadingDelay = 500
-DeleteDelay = 5025
-
-; Hotkeys
-LiveSplit = F4
-Hotkey, f7, Config
-Hotkey, f8, Load
-Hotkey, f9, Reset
+Hotkey, %macroHotkey%, Reset
+Hotkey, %loadHotkey%, Load
 Return
 
-/*
-    Macro
-*/
-
 Reset:
-    Send {%LiveSplit%}
+    rect := WindowGetRect("Diablo II: Resurrected")
+
+    heroY := rect.height * 0.503
+    heroXAmazon := rect.width * 0.200
+    heroXAssassin := rect.width * 0.303
+    heroXNecromancer := rect.width * 0.402
+    heroXBarbarian := rect.width * 0.494
+    heroXPaladin := rect.width * 0.602
+    heroXSorceress := rect.width * 0.712
+    heroXDruid := rect.width * 0.809
+
+    ; Settings
+    IniRead, name, settings.ini, Settings, name
+    IniRead, hero, settings.ini, Settings, hero
+    heroX := heroX%hero%
+    IniRead, delete, settings.ini, Settings, delete
+    IniRead, classic, settings.ini, Settings, classic
+    IniRead, hardcore, settings.ini, Settings, hardcore
+
+    ; Delays
+    IniRead, saveAndExitDelay, settings.ini, Delays, saveAndExitDelay
+    IniRead, loadingDelay, settings.ini, Delays, loadingDelay
+    hardcoreDelay := 100
+    deleteDelay := 5025
+
+    ; Hotkeys
+    IniRead, liveSplitResetHotkey, settings.ini, LiveSplit, reset
+    IniRead, liveSplitStartHotkey, settings.ini, LiveSplit, start
+
+    ; Reset
+    Send {%liveSplitResetHotkey%}
     BlockInput, On
 
-    If DeleteHero
-    {
-        MouseClick, left, 1680, 1050 ; Click on delete icon
-        MouseMove, 840, 625 ; Move mouse to "Yes"
-        Send {LButton Down} ; Hold down left mouse
-        Sleep, %DeleteDelay%
-        Send {LButton Up} ; Release left mouse
+    Send {Esc}
+    MouseClick, left, rect.width * 0.5, rect.height * 0.438
+    Sleep, %saveAndExitDelay%
+
+    ; Delete
+    if delete {
+        MouseClick, left, rect.width * 0.866, rect.height * 0.937
+        MouseMove, rect.width * 0.427, rect.height * 0.538
+        Send {LButton Down}
+        Sleep, %deleteDelay%
+        Send {LButton Up}
     }
 
-    MouseClick, left, 1725, 980 ; Click on "Create New"
-    Sleep, %LoadingDelay%
-    MouseClick, left, %Hero%, %HeroY% ; Click on the selected Hero
-    Sleep, %Delay%
+    ; Create New
+    MouseClick, left, rect.width * 0.891, rect.height * 0.868
+    Sleep, %loadingDelay%
 
-    If !DeleteHero ; Add random characters to "Name" if DeleteHero is false
+    ; Select Hero Class
+    MouseClick, left, %heroX%, %heroY%
+
+    ; Character Name
+    If !delete
     {
         Loop, 5 {
-            Letters := "bcdfghjklmnpqrstvwxz"
-            random, Rand, 1, % strlen(Letters)
-            randomLetter := strsplit(Letters) 
-            Send, % randomLetter[Rand]
+            letters := "bcdfghjklmnpqrstvwxz"
+            random, rand, 1, % strlen(letters)
+            randomLetter := strsplit(letters) 
+            Send, % randomLetter[rand]
         }
-        Send _%Name%
-    }
-    Else
+        Send _%name%
+    } Else
     {
         Send %Name%
     }
 
-    If Classic
+    ; Pre-Expansion (Classic)
+    If classic
     {
-        MouseClick, left, 1014, 1005 ; Click on Pre-Expansion (Classic)
+        MouseClick, left, rect.width * 0.519, rect.height * 0.885
     }
 
-    If Hardcore {
-        MouseClick, left, 941, 1005 ; Click on Hardcore
-        MouseClick, left, 1775, 1050 ; Click on "Create"
-        Sleep, %Delay%
-        MouseClick, left, 825, 625 ; Click on "OK" to confirm Hardcore
+    ; Create
+    If hardcore {
+        MouseClick, left, rect.width * 0.483, rect.height * 0.881
+        MouseClick, left, rect.width * 0.914, rect.height * 0.920
+        Sleep, %hardcoreDelay%
+        MouseClick, left, rect.width * 0.428, rect.height * 0.536
+    } Else {
+        MouseClick, left, rect.width * 0.914, rect.height * 0.920
     }
 
-    Else
-    {
-        MouseClick, left, 1775, 1050 ; Click on "Create"
-    }
-    Send {F3}
+    ; Move mouse to center
+    MouseMove, (rect.width/2), (rect.height/2)
+
     BlockInput Off
-Return
+    Send {%liveSplitStartHotkey%}
+return
 
-Config: ; Show mouse position on hotkey to help with settings
-    MouseGetPos, xpos, ypos 
-    MsgBox, Cursor X%xpos%, Y%ypos%.
-Return
-
-Load: ; Load settings on hotkey
+; Load settings on hotkey
+load:
     ToolTip Loading...
     Sleep, 500
     Reload
+Return
+
+WindowGetRect(windowTitle*) {
+    if hwnd := WinExist(windowTitle*) {
+        VarSetCapacity(rect, 16, 0)
+        DllCall("GetClientRect", "Ptr", hwnd, "Ptr", &rect)
+        return {width: NumGet(rect, 8, "Int"), height: NumGet(rect, 12, "Int")}
+    }
+}
