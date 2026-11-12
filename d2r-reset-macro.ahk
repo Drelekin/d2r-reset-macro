@@ -7,8 +7,8 @@
 ;   class -> version -> name -> (hardcore) -> Create -> (hardcore OK) -> done
 ;
 ; Every UI step is gated by a small pixel probe around the control that must be
-; on screen. The macro proceeds as soon as the probe is stable, so there is no
-; delay tuning. Timeouts in [Timeouts] are upper bounds, not waits.
+; on screen. The macro proceeds as soon as the probe is stable; timeouts are
+; upper bounds, not waits.
 ;
 ; Start in game (chat closed), at the Esc menu, on character select (online or
 ; offline), or on the character-create screen. The macro resumes from the
@@ -38,13 +38,16 @@ if !FileExist("settings.ini")
 
 global winTitle := "Diablo II: Resurrected"
 
-global TARGET_ASPECT       := 16 / 9
-global ASPECT_TOLERANCE    := 0.01
-global MAX_NAME_LEN        := 16
-global DELETE_HOLD_MS      := 5025     ; the game requires a long press
-global INPUT_SETTLE_MS     := 60       ; tiny click settle, not a UI wait
-global CAPTURE_DIR         := "captures"
-global LOG_FILE            := "macro-log.txt"
+global TARGET_ASPECT         := 16 / 9
+global ASPECT_TOLERANCE      := 0.01
+global MAX_NAME_LEN          := 16
+global DELETE_HOLD_MS        := 5025   ; the game requires a long press
+global INPUT_SETTLE_MS       := 60     ; tiny click settle, not a UI wait
+global TRANSITION_TIMEOUT_MS := 5000   ; menu / character select / create screen
+global DIALOG_TIMEOUT_MS     := 3000   ; dropdowns and confirmation dialogs
+global DELETE_TIMEOUT_MS     := 8000   ; character list after the delete hold
+global POLL_MS               := 50     ; probe interval
+global CAPTURE_DIR           := "captures"
 
 ; Patch thresholds are expressed as fractions of the probe area.
 global RED_ICON_MIN    := 0.15   ; red delete/trash icon
@@ -129,9 +132,9 @@ global classicClasses := ["Amazon", "Barbarian", "Necromancer", "Paladin", "Sorc
 
 ; The version dropdown shows only the versions valid for the selected class,
 ; so its rows shift depending on the option count. These are the row centers.
-global versionNames  := ["reign", "expansion", "classic"]
-global versionRow3 := Map("classic", "versionClassic3", "expansion", "versionExpansion3", "reign", "versionReign3")
-global versionRow2 := Map("expansion", "versionExpansion2", "reign", "versionReign2")
+global versionNames := ["reign", "expansion", "classic"]
+global versionRow3   := Map("classic", "versionClassic3", "expansion", "versionExpansion3", "reign", "versionReign3")
+global versionRow2   := Map("expansion", "versionExpansion2", "reign", "versionReign2")
 
 global capFrame := 0
 
@@ -140,18 +143,9 @@ global capFrame := 0
 ; ---------------------------------------------------------------------------
 try
     ReadSettings()
-catch as err {
-    Fail("Could not read settings.ini: " . err.Message)
+catch as readErr {
+    Fail("Could not read settings.ini: " . readErr.Message)
     ExitApp()
-}
-
-if (debugLog = "1") {
-    try FileDelete(LOG_FILE)
-    Log("settings: hero=" . hero . " version=" . version . " delete=" . delete
-        . " hardcore=" . hardcore . " screenSpace=" . screenSpace)
-    Log("timeouts: transition=" . timeoutTransition
-        . " dialog=" . timeoutDialog . " deleteHold=" . timeoutDeleteHold
-        . " poll=" . pollMs)
 }
 
 ; Diagnostics: print the current probe state and exit. Used to calibrate new
@@ -168,22 +162,11 @@ if (macroHotkey = "") {
 
 try
     Hotkey(macroHotkey, Reset)
-catch as err {
-    Fail("Could not register hotkey '" . macroHotkey . "': " . err.Message)
+catch as hotkeyErr {
+    Fail("Could not register hotkey '" . macroHotkey . "': " . hotkeyErr.Message)
     ExitApp()
 }
 global registeredHotkey := macroHotkey
-
-; Optional v1-style reload hotkey. A bad value is a warning, not a startup
-; failure, because the macro hotkey is the one that matters.
-if (loadHotkey != "") {
-    try
-        Hotkey(loadHotkey, LoadSettings)
-    catch as err {
-        ToolTip("Could not register load hotkey '" . loadHotkey . "': " . err.Message)
-        SetTimer(ClearTip, -2500)
-    }
-}
 
 global iniStamp := FileGetTime("settings.ini", "M")
 SetTimer(WatchSettings, 2000)
@@ -355,7 +338,7 @@ class Capture {
         }
     }
 
-    ; Write the current frame as a bottom-up 32-bit BMP. Used only for debug.
+    ; Write the current frame as a bottom-up 32-bit BMP. Used by --shot.
     SaveBmp(path) {
         if !this.bits
             return 0
@@ -392,7 +375,7 @@ class Capture {
 Return
 
 ProbeCli() {
-    global winTitle, hwnd, cw, ch, screenSpace, spaceScale, debugCapture
+    global winTitle, hwnd, cw, ch, screenSpace, spaceScale
 
     hwnd := WinExist(winTitle)
     if !hwnd {
@@ -426,7 +409,6 @@ ProbeCli() {
     out .= "skull raw  " . StatLine(st) . "`n"
     out .= "startState " . DetectStartState() . "`n"
     if (A_Args.Length >= 2 && A_Args[2] = "--shot") {
-        debugCapture := "1"
         SaveCapture("probe")
         out .= "capture saved under " CAPTURE_DIR "`n"
     }
@@ -435,27 +417,7 @@ ProbeCli() {
 
 ReadSettings() {
     global name, hero, version, delete, hardcore, screenSpace
-    global macroHotkey, loadHotkey, liveSplitResetHotkey, liveSplitStartHotkey
-    global timeoutTransition, timeoutDialog, timeoutDeleteHold, pollMs
-    global debugLog, debugCapture, logPath
-
-    name     := ""
-    hero     := "Barbarian"
-    version  := ""
-    delete   := "0"
-    hardcore := "0"
-    screenSpace := "0"
-    macroHotkey := ""
-    loadHotkey  := ""
-    liveSplitResetHotkey := ""
-    liveSplitStartHotkey := ""
-    timeoutTransition := "5000"
-    timeoutDialog     := "3000"
-    timeoutDeleteHold := "8000"
-    pollMs            := "50"
-    debugLog     := "0"
-    debugCapture := "0"
-    logPath      := A_ScriptDir . "\" . LOG_FILE
+    global macroHotkey, liveSplitResetHotkey, liveSplitStartHotkey
 
     ; FileRead handles BOMs of any encoding. Parsing the text directly keeps a
     ; UTF-8 BOM from silently resetting the settings.
@@ -469,19 +431,9 @@ ReadSettings() {
     screenSpace := IniVal(iniText, "Settings", "screenSpace", "0")
 
     macroHotkey := IniVal(iniText, "Hotkeys", "macro", "")
-    loadHotkey  := IniVal(iniText, "Hotkeys", "load", "")
 
     liveSplitResetHotkey := IniVal(iniText, "LiveSplit", "reset", "")
     liveSplitStartHotkey := IniVal(iniText, "LiveSplit", "start", "")
-
-    timeoutTransition := IniVal(iniText, "Timeouts", "transition", "5000")
-    timeoutDialog     := IniVal(iniText, "Timeouts", "dialog", "3000")
-    timeoutDeleteHold := IniVal(iniText, "Timeouts", "deleteHold", "8000")
-    pollMs            := IniVal(iniText, "Timeouts", "poll", "50")
-
-    debugLog     := IniVal(iniText, "Debug", "log", "0")
-    debugCapture := IniVal(iniText, "Debug", "capture", "0")
-    logPath      := A_ScriptDir . "\" . LOG_FILE
 }
 
 ; ---------------------------------------------------------------------------
@@ -492,7 +444,6 @@ Reset(*) {
     global Coords, Regions, classNames, classicClasses, versionNames, versionRow3, versionRow2
     global name, hero, version, delete, hardcore, screenSpace
     global liveSplitResetHotkey, liveSplitStartHotkey
-    global timeoutTransition, timeoutDialog, timeoutDeleteHold, pollMs
     global hwnd, cw, ch, lastProbeDetail
 
     CoordMode("Mouse", "Client")
@@ -574,19 +525,6 @@ Reset(*) {
         return
     }
 
-    timeoutTransition := ParseTimeout(timeoutTransition, 200, 120000, "transition")
-    if (timeoutTransition = 0)
-        return
-    timeoutDialog := ParseTimeout(timeoutDialog, 200, 120000, "dialog")
-    if (timeoutDialog = 0)
-        return
-    timeoutDeleteHold := ParseTimeout(timeoutDeleteHold, 1000, 120000, "deleteHold")
-    if (timeoutDeleteHold = 0)
-        return
-    pollMs := ParseTimeout(pollMs, 10, 1000, "poll")
-    if (pollMs = 0)
-        return
-
     classicClassFlag := false
     for className in classicClasses
         if (hero = className)
@@ -596,11 +534,9 @@ Reset(*) {
     ; Keep the run moving when settings contain a version the class does not
     ; support: use the closest available version instead of failing.
     if (version = "classic" && !classicClassFlag) {
-        Log("WARN classic is not available for " . hero . "; using expansion")
         version := "expansion"
     }
     if (version = "expansion" && isWarlock) {
-        Log("WARN expansion is not available for Warlock; using reign")
         version := "reign"
     }
 
@@ -636,9 +572,6 @@ Reset(*) {
         return
     }
 
-    Log("=== run start: hero=" . hero . " version=" . version
-        . " delete=" . delete . " hardcore=" . hardcore . " screenSpace=" . screenSpace)
-
     ; --- Start state -------------------------------------------------------
     ; Resume from whatever screen D2R is on: in game, the Esc menu, character
     ; select (online or offline), or the character-create screen.
@@ -652,28 +585,20 @@ Reset(*) {
     SendHotkey(liveSplitResetHotkey)
 
     if (startKind = 1) {
-        Log("start: in game")
         Send("{Esc}")
         Sleep(INPUT_SETTLE_MS)
         ; If Esc closed the chat box instead of opening the menu, the HUD is
         ; still visible. One more Esc opens the menu.
         if !WaitFor("game menu", "menu", 1000, 150) {
             if !IsNow("menu") && IsNow("hud") {
-                Log("still in game after Esc; chat was probably open, pressing Esc again")
                 Send("{Esc}")
                 Sleep(INPUT_SETTLE_MS)
             }
         }
-        if !WaitFor("game menu", "menu", timeoutTransition, 200) {
+        if !WaitFor("game menu", "menu", TRANSITION_TIMEOUT_MS, 200) {
             StepFail("Game menu", "The Esc menu did not appear.`nClose the chat box and run again.")
             return
         }
-    } else if (startKind = 4) {
-        Log("start: game menu already open")
-    } else if (startKind = 2) {
-        Log("start: character select")
-    } else if (startKind = 3) {
-        Log("start: create screen")
     }
 
     ; --- Navigate to character select when needed --------------------------
@@ -681,7 +606,7 @@ Reset(*) {
     if (startKind = 1 || startKind = 4) {
         if !ClickAt("saveAndExit")
             return
-        if !WaitFor("character select", "charSelect", timeoutTransition, 200) {
+        if !WaitFor("character select", "charSelect", TRANSITION_TIMEOUT_MS, 200) {
             StepFail("Save and Exit", "The character-select screen did not appear.")
             return
         }
@@ -691,7 +616,7 @@ Reset(*) {
             ; select, delete, then create again from a fresh screen.
             if !ClickAt("backBtn")
                 return
-            if !WaitFor("character select", "charSelect", timeoutTransition, 200) {
+            if !WaitFor("character select", "charSelect", TRANSITION_TIMEOUT_MS, 200) {
                 StepFail("Back", "The character-select screen did not appear after Back.")
                 return
             }
@@ -704,12 +629,10 @@ Reset(*) {
     if !atCreate {
         ; --- Ensure the offline tab ---------------------------------------
         ; The selected tab has bright white text; the unselected tab is dim.
-        if IsNow("offlineSelected") {
-            Log("offline tab already selected")
-        } else {
+        if !IsNow("offlineSelected") {
             if !ClickAt("offlineTab")
                 return
-            if !WaitFor("offline tab", "offlineSelected", timeoutTransition, 200) {
+            if !WaitFor("offline tab", "offlineSelected", TRANSITION_TIMEOUT_MS, 200) {
                 StepFail("Offline tab", "The offline tab did not become selected.")
                 return
             }
@@ -717,13 +640,13 @@ Reset(*) {
 
         ; --- Optional delete ----------------------------------------------
         if deleteFlag {
-            if !WaitFor("delete button", "deleteButton", timeoutTransition, 150) {
+            if !WaitFor("delete button", "deleteButton", TRANSITION_TIMEOUT_MS, 150) {
                 StepFail("Delete", "The offline character list / delete button did not appear.")
                 return
             }
             if !ClickAt("deleteButton")
                 return
-            if !WaitFor("delete confirmation", "deleteConfirm", timeoutDialog, 200) {
+            if !WaitFor("delete confirmation", "deleteConfirm", DIALOG_TIMEOUT_MS, 200) {
                 StepFail("Delete", "The delete-confirmation prompt did not appear.")
                 return
             }
@@ -737,15 +660,14 @@ Reset(*) {
                 StepFail("Delete", "Lost focus while holding the delete button.")
                 return
             }
-            Log("delete hold released after " . (A_TickCount - start) . " ms")
 
-            if !WaitFor("delete prompt closed", "deleteConfirmGone", timeoutDeleteHold, 150) {
+            if !WaitFor("delete prompt closed", "deleteConfirmGone", DELETE_TIMEOUT_MS, 150) {
                 StepFail("Delete", "The delete prompt did not close after the hold.")
                 return
             }
 
             ; The character list is the reliable post-delete state.
-            if !WaitFor("character list", "charSelect", timeoutDeleteHold, 200) {
+            if !WaitFor("character list", "charSelect", DELETE_TIMEOUT_MS, 200) {
                 StepFail("Delete", "The character list did not return after deleting.")
                 return
             }
@@ -754,7 +676,7 @@ Reset(*) {
         ; --- Create New ----------------------------------------------------
         if !ClickAt("createNew")
             return
-        if !WaitFor("create screen", "createScreen", timeoutTransition, 200) {
+        if !WaitFor("create screen", "createScreen", TRANSITION_TIMEOUT_MS, 200) {
             StepFail("Create New", "The character-create screen did not appear.`nThe createNew coordinate may need a click-logger check.")
             return
         }
@@ -764,7 +686,7 @@ Reset(*) {
     if !ClickAt(hero)
         return
     ; The name field only appears after the class selection is registered.
-    if !WaitFor("class selected", "nameField", timeoutTransition, 150) {
+    if !WaitFor("class selected", "nameField", TRANSITION_TIMEOUT_MS, 150) {
         StepFail("Class", "The character name field did not appear after selecting " . hero . ".")
         return
     }
@@ -776,13 +698,13 @@ Reset(*) {
         versionCoord := classicClassFlag ? versionRow3[version] : versionRow2[version]
         if !ClickAt("versionButton")
             return
-        if !WaitFor("version dropdown", "versionOpen", timeoutDialog, 100) {
+        if !WaitFor("version dropdown", "versionOpen", DIALOG_TIMEOUT_MS, 100) {
             StepFail("Version", "The game-version dropdown did not open.")
             return
         }
         if !ClickAt(versionCoord)
             return
-        if !WaitFor("version accepted", "versionClosed", timeoutDialog, 100) {
+        if !WaitFor("version accepted", "versionClosed", DIALOG_TIMEOUT_MS, 100) {
             StepFail("Version", "The game-version dropdown did not close after selecting " . version . ".")
             return
         }
@@ -809,7 +731,7 @@ Reset(*) {
 
     ; The Create button turns gold only once class + name are accepted, so it
     ; is the readiness gate for both the name and the hardcore choice.
-    if !WaitFor("name accepted", "createEnabled", timeoutDialog, 150) {
+    if !WaitFor("name accepted", "createEnabled", DIALOG_TIMEOUT_MS, 150) {
         StepFail("Name", "The Create button did not become ready.`nThe name may be invalid or already in use.")
         return
     }
@@ -823,20 +745,20 @@ Reset(*) {
     if hardcoreFlag && !hcState {
         if !ClickAt("hardcoreBox")
             return
-        if !WaitFor("hardcore selected", "hcChecked", timeoutDialog, 100) {
+        if !WaitFor("hardcore selected", "hcChecked", DIALOG_TIMEOUT_MS, 100) {
             StepFail("Hardcore", "The Hardcore skull did not turn on.")
             return
         }
     } else if !hardcoreFlag && hcState {
         if !ClickAt("hardcoreBox")
             return
-        if !WaitFor("hardcore cleared", "hcUnchecked", timeoutDialog, 100) {
+        if !WaitFor("hardcore cleared", "hcUnchecked", DIALOG_TIMEOUT_MS, 100) {
             StepFail("Hardcore", "The Hardcore skull did not turn off.")
             return
         }
     }
 
-    if !WaitFor("Create ready", "createEnabled", timeoutDialog, 100) {
+    if !WaitFor("Create ready", "createEnabled", DIALOG_TIMEOUT_MS, 100) {
         StepFail("Create", "The Create button is not ready.")
         return
     }
@@ -848,7 +770,7 @@ Reset(*) {
     ; Hardcore confirmation dialog. The OK button is detected by its gold
     ; border (language independent) and must be stable before clicking.
     if hardcoreFlag {
-        if !WaitFor("hardcore confirmation", "hcDialog", timeoutDialog, 250) {
+        if !WaitFor("hardcore confirmation", "hcDialog", DIALOG_TIMEOUT_MS, 250) {
             StepFail("Hardcore OK", "The Hardcore confirmation dialog did not appear.")
             return
         }
@@ -856,11 +778,10 @@ Reset(*) {
         Loop 2 {
             if !ClickAt("hardcoreOk")
                 return
-            if WaitFor("hardcore dialog closed", "hcDialogGone", timeoutDialog, 150) {
+            if WaitFor("hardcore dialog closed", "hcDialogGone", DIALOG_TIMEOUT_MS, 150) {
                 dismissed := true
                 break
             }
-            Log("hardcore dialog still open after OK; retrying")
         }
         if !dismissed {
             StepFail("Hardcore OK", "The Hardcore confirmation dialog did not close.")
@@ -871,21 +792,6 @@ Reset(*) {
     ; Done: do not wait for the loading screen or move the mouse. The host
     ; timer, if configured, is started immediately after the final click.
     SendHotkey(liveSplitStartHotkey)
-    Log("=== run complete")
-}
-
-; Parse and validate a [Timeouts] value; returns the integer or 0 on error.
-ParseTimeout(value, low, high, key) {
-    if !IsInteger(value) {
-        Fail("Invalid [Timeouts] " . key . " '" . value . "' in settings.ini.")
-        return 0
-    }
-    n := Integer(value)
-    if (n < low || n > high) {
-        Fail("Invalid [Timeouts] " . key . " '" . value . "' in settings.ini.`nUse " . low . "-" . high . ".")
-        return 0
-    }
-    return n
 }
 
 IniVal(text, section, key, fallback) {
@@ -992,7 +898,6 @@ HardcoreState() {
     global HC_RED_ON, HC_RED_OFF
     GetCapture().Grab()
     st := StatsOf("skull")
-    Log("hardcore skull " . StatLine(st))
     if (st.redFrac >= HC_RED_ON)
         return 1
     if (st.redFrac <= HC_RED_OFF)
@@ -1001,7 +906,7 @@ HardcoreState() {
 }
 
 ; Probe names are deliberately strings: the switch is easy to extend and the
-; detailed stats are logged on every timeout.
+; detailed stats are kept for failure messages.
 Probe(name) {
     switch name {
         case "hud":
@@ -1155,7 +1060,7 @@ DetectStartState() {
 ; stop changing (dialog fade-in), otherwise stableCount positive polls are
 ; enough. Returns 1/0; on timeout the last stats are kept for StepFail().
 WaitFor(name, probeName, timeoutMs, stableMs := 150, stableCount := 2) {
-    global pollMs, lastProbeDetail
+    global lastProbeDetail
 
     start := A_TickCount
     stableStart := 0
@@ -1166,12 +1071,11 @@ WaitFor(name, probeName, timeoutMs, stableMs := 150, stableCount := 2) {
     while (A_TickCount - start < timeoutMs) {
         if !GameActive() {
             lastProbeDetail := "game lost focus"
-            Log("ABORT " name ": game lost focus")
             return 0
         }
         if !GetCapture().Grab() {
             lastProbeDetail := "screen capture failed"
-            Sleep(pollMs)
+            Sleep(POLL_MS)
             continue
         }
         r := Probe(probeName)
@@ -1180,7 +1084,6 @@ WaitFor(name, probeName, timeoutMs, stableMs := 150, stableCount := 2) {
             if (stableMs <= 0) {
                 got += 1
                 if (got >= stableCount) {
-                    Log("READY " name " after " (A_TickCount - start) " ms  " r.detail)
                     return 1
                 }
             } else {
@@ -1188,7 +1091,6 @@ WaitFor(name, probeName, timeoutMs, stableMs := 150, stableCount := 2) {
                     stableStart := A_TickCount
                     lastSig := r.sig
                 } else if (A_TickCount - stableStart >= stableMs && SigStable(lastSig, r.sig)) {
-                    Log("READY " name " after " (A_TickCount - start) " ms  " r.detail)
                     return 1
                 } else if !SigStable(lastSig, r.sig) {
                     stableStart := A_TickCount
@@ -1200,10 +1102,9 @@ WaitFor(name, probeName, timeoutMs, stableMs := 150, stableCount := 2) {
             stableStart := 0
             lastSig := 0
         }
-        Sleep(pollMs)
+        Sleep(POLL_MS)
     }
 
-    Log("TIMEOUT " name " after " timeoutMs " ms  " lastProbeDetail)
     return 0
 }
 
@@ -1229,32 +1130,19 @@ HoldFor(key, ms) {
 }
 
 ; ---------------------------------------------------------------------------
-; Logging and failure helpers
+; Failure and screenshot helpers
 ; ---------------------------------------------------------------------------
-Log(message) {
-    global debugLog, logPath
-    if (debugLog != "1")
-        return
-    if (logPath = "")
-        return
-    try FileAppend(FormatTime(, "HH:mm:ss") " " message "`n", logPath)
-}
-
 StepFail(step, message) {
-    global debugCapture, lastProbeDetail
-    Log("FAIL " step ": " message " | " lastProbeDetail)
+    global lastProbeDetail
     ; Alt-tab is a normal abort: do not steal focus with a message box.
     if (lastProbeDetail = "game lost focus")
         return
-    SaveCapture("fail")
     detail := (lastProbeDetail != "") ? "`n`nLast pixel state:`n" . lastProbeDetail : ""
     Fail(step . "`n`n" . message . detail)
 }
 
 SaveCapture(tag) {
-    global debugCapture, CAPTURE_DIR
-    if (debugCapture != "1")
-        return
+    global CAPTURE_DIR
     if !DirExist(CAPTURE_DIR)
         DirCreate(CAPTURE_DIR)
     if !GetCapture().Grab()
@@ -1272,13 +1160,6 @@ SendHotkey(key) {
         Send(m[1] . "{" . m[2] . "}")
     else
         Send("{" . key . "}")
-}
-
-; v1-style reload hotkey.
-LoadSettings(*) {
-    ToolTip("Loading...")
-    Sleep(500)
-    Reload()
 }
 
 Fail(message) {
