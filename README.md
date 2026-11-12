@@ -33,38 +33,21 @@ selected first.
 [Settings]
 name=          ; 1-16 letters; 1 letter is doubled; empty = class name
 hero=5         ; class name or 1-8
-version=reign  ; reign | expansion | classic
-delete=1       ; 1 = delete the selected character first
-hardcore=1     ; 1 = hardcore, 0 = softcore
+version=reign  ; reign (1) | expansion (2) | classic (3)
+delete=1       ; keep (0) | delete first (1)
+hardcore=1     ; softcore (0) | hardcore (1)
 screenSpace=0  ; D2R screen space calibration 0-4
 
 [Hotkeys]
 macro=F12
-; load=F11
 
 [LiveSplit]
 ; optional; blank to disable
 reset=Numpad3
 start=Numpad1
-
-[Timeouts]
-transition=5000   ; menu / character select / create screen
-dialog=3000       ; dropdowns and confirmation dialogs
-deleteHold=8000   ; max wait for the character list after the delete hold
-poll=50           ; probe interval
-
-[Debug]
-log=0             ; 1 = write macro-log.txt
-capture=0         ; 1 = save a BMP when a step fails
 ```
 
-Timeouts are upper bounds, not delays. The macro continues as soon as the UI is
-ready.
-
 ## Troubleshooting
-
-With `[Debug] log=1`, failures are written to `macro-log.txt`; `capture=1` also
-saves a BMP under `captures/`.
 
 ```
 AutoHotkey64.exe d2r-reset-macro.ahk --probe

@@ -129,6 +129,7 @@ global classicClasses := ["Amazon", "Barbarian", "Necromancer", "Paladin", "Sorc
 
 ; The version dropdown shows only the versions valid for the selected class,
 ; so its rows shift depending on the option count. These are the row centers.
+global versionNames  := ["reign", "expansion", "classic"]
 global versionRow3 := Map("classic", "versionClassic3", "expansion", "versionExpansion3", "reign", "versionReign3")
 global versionRow2 := Map("expansion", "versionExpansion2", "reign", "versionReign2")
 
@@ -488,7 +489,7 @@ ReadSettings() {
 ; ---------------------------------------------------------------------------
 Reset(*) {
     global winTitle, TARGET_ASPECT, ASPECT_TOLERANCE, MAX_NAME_LEN
-    global Coords, Regions, classNames, classicClasses, versionRow3, versionRow2
+    global Coords, Regions, classNames, classicClasses, versionNames, versionRow3, versionRow2
     global name, hero, version, delete, hardcore, screenSpace
     global liveSplitResetHotkey, liveSplitStartHotkey
     global timeoutTransition, timeoutDialog, timeoutDeleteHold, pollMs
@@ -549,11 +550,17 @@ Reset(*) {
     if (StrLen(name) = 1)
         name := name . name
 
+    ; version may be a number 1-3 or a version name (case-insensitive).
     version := StrLower(Trim(version))
     if (version = "")
         version := "reign"
+    if IsInteger(version) {
+        index := Integer(version)
+        if (index >= 1 && index <= versionNames.Length)
+            version := versionNames[index]
+    }
     if !versionRow3.Has(version) {
-        Fail("Invalid version '" . version . "' in settings.ini.`nUse reign, classic or expansion.")
+        Fail("Invalid version '" . version . "' in settings.ini.`nUse 1-3 or reign, expansion or classic.")
         return
     }
 
