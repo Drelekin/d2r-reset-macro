@@ -25,6 +25,8 @@
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+; Keep code warnings out of modal dialogs so they cannot interrupt a run.
+#Warn All, StdOut
 
 SetTitleMatchMode(2)
 SetWorkingDir(A_ScriptDir)
@@ -106,7 +108,12 @@ global Regions := Map(
     ; Character create
     "createBtn",        [0.825, 0.891, 0.945, 0.936],
     "toggleBtn",        [0.845, 0.070, 0.950, 0.112],
-    "versionListLeft",  [0.766, 0.787, 0.776, 0.838],
+    ; The version list pops up above the version button with its rows
+    ; vertically centred, so a two-entry list (expansion-only classes such as
+    ; Assassin and Druid) sits one row lower than the three-entry list. Keep
+    ; this strip inside both layouts; otherwise the top of the strip samples
+    ; the class artwork and the open probe reads its gold/red.
+    "versionListLeft",  [0.766, 0.806, 0.776, 0.833],
     "nameField",        [0.440, 0.797, 0.560, 0.833],
     "skull",            [0.485, 0.868, 0.515, 0.908],
 
@@ -426,10 +433,28 @@ ProbeCli() {
 }
 
 ReadSettings() {
-    global name, hero, version, classic, delete, hardcore, screenSpace
+    global name, hero, version, delete, hardcore, screenSpace
     global macroHotkey, loadHotkey, liveSplitResetHotkey, liveSplitStartHotkey
     global timeoutTransition, timeoutDialog, timeoutDeleteHold, pollMs
     global debugLog, debugCapture, logPath
+
+    name     := ""
+    hero     := "Barbarian"
+    version  := ""
+    delete   := "0"
+    hardcore := "0"
+    screenSpace := "0"
+    macroHotkey := ""
+    loadHotkey  := ""
+    liveSplitResetHotkey := ""
+    liveSplitStartHotkey := ""
+    timeoutTransition := "5000"
+    timeoutDialog     := "3000"
+    timeoutDeleteHold := "8000"
+    pollMs            := "50"
+    debugLog     := "0"
+    debugCapture := "0"
+    logPath      := A_ScriptDir . "\" . LOG_FILE
 
     ; FileRead handles BOMs of any encoding. Parsing the text directly keeps a
     ; UTF-8 BOM from silently resetting the settings.
@@ -438,7 +463,6 @@ ReadSettings() {
     name     := IniVal(iniText, "Settings", "name", "")
     hero     := IniVal(iniText, "Settings", "hero", "Barbarian")
     version  := IniVal(iniText, "Settings", "version", "")
-    classic  := IniVal(iniText, "Settings", "classic", "")
     delete   := IniVal(iniText, "Settings", "delete", "0")
     hardcore := IniVal(iniText, "Settings", "hardcore", "0")
     screenSpace := IniVal(iniText, "Settings", "screenSpace", "0")
@@ -449,8 +473,6 @@ ReadSettings() {
     liveSplitResetHotkey := IniVal(iniText, "LiveSplit", "reset", "")
     liveSplitStartHotkey := IniVal(iniText, "LiveSplit", "start", "")
 
-    ; [Delays] from older versions is intentionally ignored. These are upper
-    ; bounds; a shorter value only makes a slow screen fail earlier.
     timeoutTransition := IniVal(iniText, "Timeouts", "transition", "5000")
     timeoutDialog     := IniVal(iniText, "Timeouts", "dialog", "3000")
     timeoutDeleteHold := IniVal(iniText, "Timeouts", "deleteHold", "8000")
@@ -467,7 +489,7 @@ ReadSettings() {
 Reset(*) {
     global winTitle, TARGET_ASPECT, ASPECT_TOLERANCE, MAX_NAME_LEN
     global Coords, Regions, classNames, classicClasses, versionRow3, versionRow2
-    global name, hero, version, classic, delete, hardcore, screenSpace
+    global name, hero, version, delete, hardcore, screenSpace
     global liveSplitResetHotkey, liveSplitStartHotkey
     global timeoutTransition, timeoutDialog, timeoutDeleteHold, pollMs
     global hwnd, cw, ch, lastProbeDetail
@@ -521,24 +543,15 @@ Reset(*) {
     hero := heroKey
 
     ; An empty name falls back to the hero name so delete=1 can still create.
+    ; A single-character name is doubled because D2R rejects 1-char names.
     if (name = "")
         name := hero
+    if (StrLen(name) = 1)
+        name := name . name
 
-    ; version is the current setting. If it is missing, fall back to the old
-    ; v1 classic flag: 1 = classic, 0 = expansion.
     version := StrLower(Trim(version))
-    if (version = "") {
-        if (classic = "")
-            version := "reign"
-        else if (classic = "1")
-            version := "classic"
-        else if (classic = "0")
-            version := "expansion"
-        else {
-            Fail("Invalid classic '" . classic . "' in settings.ini.`nUse 0 or 1.")
-            return
-        }
-    }
+    if (version = "")
+        version := "reign"
     if !versionRow3.Has(version) {
         Fail("Invalid version '" . version . "' in settings.ini.`nUse reign, classic or expansion.")
         return
@@ -567,19 +580,21 @@ Reset(*) {
     if (pollMs = 0)
         return
 
-    isClassicClass := false
+    classicClassFlag := false
     for className in classicClasses
         if (hero = className)
-            isClassicClass := true
+            classicClassFlag := true
     isWarlock := (hero = "Warlock")
 
-    if (version = "classic" && !isClassicClass) {
-        Fail("Classic is not available for " . hero . ".`nUse expansion or reign.")
-        return
+    ; Keep the run moving when settings contain a version the class does not
+    ; support: use the closest available version instead of failing.
+    if (version = "classic" && !classicClassFlag) {
+        Log("WARN classic is not available for " . hero . "; using expansion")
+        version := "expansion"
     }
     if (version = "expansion" && isWarlock) {
-        Fail("Expansion is not available for Warlock.`nUse reign.")
-        return
+        Log("WARN expansion is not available for Warlock; using reign")
+        version := "reign"
     }
 
     rc := Buffer(16, 0)
@@ -610,7 +625,7 @@ Reset(*) {
     }
     charName := SubStr(charName, 1, MAX_NAME_LEN)
     if (StrLen(charName) < 2) {
-        Fail("Character name '" . charName . "' is too short.`nUse 2-16 letters.")
+        Fail("Character name '" . charName . "' is too short.`nUse 1-16 letters.")
         return
     }
 
@@ -751,7 +766,7 @@ Reset(*) {
     ; Reign is the create-screen default, so it needs no dropdown selection.
     ; (Warlock is Reign-only, so this also covers Warlock.)
     if (version != "reign") {
-        versionCoord := isClassicClass ? versionRow3[version] : versionRow2[version]
+        versionCoord := classicClassFlag ? versionRow3[version] : versionRow2[version]
         if !ClickAt("versionButton")
             return
         if !WaitFor("version dropdown", "versionOpen", timeoutDialog, 100) {
@@ -1241,11 +1256,15 @@ SaveCapture(tag) {
     GetCapture().SaveBmp(A_ScriptDir . "\" . CAPTURE_DIR . "\" . stamp . "-" . tag . ".bmp")
 }
 
-; Send a simple key name (F4, 3, Numpad3, ...) as a key press.
+; Send a hotkey string such as F4, Numpad3, ^F1 or #r.
 SendHotkey(key) {
     if (key = "")
         return
-    Send("{" . key . "}")
+    ; Keep modifiers outside the braces: Send "^{F1}", not "{^F1}".
+    if RegExMatch(key, "^([\^!+#]+)(.+)$", &m)
+        Send(m[1] . "{" . m[2] . "}")
+    else
+        Send("{" . key . "}")
 }
 
 ; v1-style reload hotkey.
