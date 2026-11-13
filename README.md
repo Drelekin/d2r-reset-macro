@@ -1,13 +1,15 @@
 # d2r-reset-macro
 
-Automates D2R character resets. Start in game with chat closed and press the
-hotkey: the macro saves and exits, optionally deletes the current character,
+Automates D2R character resets. Start in game and press the hotkey: the macro
+opens the game menu, saves and exits, optionally deletes the current character,
 then creates a new one from `settings.ini`. It only runs while D2R is focused;
 losing focus aborts the run.
 
-Flow: `Esc` -> Save and Exit -> (offline tab -> delete) -> Create New -> class
--> version -> name -> (hardcore) -> Create -> (hardcore confirmation). It stops
-after Create and does not wait for the loading screen.
+Flow: HUD Game Menu button -> Save and Exit -> (offline tab -> delete) -> Create
+New -> class -> version -> name -> (hardcore) -> Create -> (hardcore
+confirmation). It stops on the final click and does not wait for the loading
+screen. The menu button also closes an open chat box or panel, so the run does
+not need to start from a clean screen.
 
 ## Requirements
 
@@ -55,7 +57,30 @@ AutoHotkey64.exe d2r-reset-macro.ahk --probe --shot
 ```
 
 `--probe` prints probe results and exits; `--shot` also saves a screenshot.
-Probe mode replaces a running macro, so start it again afterwards.
+Probe mode replaces a running macro, so start it again afterwards. Use `--probe`
+after changing `screenSpace` or a resolution to confirm every screen still
+probes as expected.
+
+`--trace` (add to the normal run) records how long every wait took and writes
+`captures\<stamp>-trace.txt` when the run ends. Each line also shows when the
+probe matched (`first=`) and how much of the wait was the fade settle (`held=`),
+so a slow step can be told apart from a slow animation.
+
+If the delete step fails, the macro saves a screenshot of the delete prompt
+(`captures\<stamp>-delete-dialog.bmp` or `<stamp>-delete-stuck.bmp`), and the
+error box prints the last pixel state of the failed probe.
+
+## Notes
+
+- A probe reads only the regions it needs, all in one capture, so a poll costs
+  about one display frame.
+- Controls that fade in must hold for `FADE_SAMPLES` frames and then keep the
+  same signature for `FADE_SETTLE_MS` before they are clicked; a click started
+  mid-animation can be swallowed.
+- Probe thresholds must key off areas (a fill, a frame), never thin strokes:
+  glyph fractions change with `SAMPLE_CAP` and the resolution.
+- The hold-to-delete press (`DELETE_HOLD_MS`) is a game requirement and is the
+  largest single cost of a run.
 
 ## License
 
