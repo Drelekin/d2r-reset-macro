@@ -68,6 +68,9 @@ global HUD_BLUE_MIN := 0.25
 global lastProbeDetail := ""
 global lastGrabFailed := false
 
+; Completed step gates in the current attempt; ranks failures across retries.
+global stepProgress := 0
+
 ; Client-pixel caches built once per run so probes and clicks do no per-call math.
 global ProbeRects := Map()
 global PointPx := Map()
@@ -148,6 +151,22 @@ global versionRow3 := Map("classic", "versionClassic3", "expansion", "versionExp
 global versionRow2 := Map("expansion", "versionExpansion2", "reign", "versionReign2")
 
 global capFrame := 0
+
+; Set once a step may have changed the game; blocks a calibration retry.
+global destructiveDone := false
+
+; Set once Save and Exit was clicked. A retry never sends that click again: the
+; first one may already have gone through, and a transitional screen can probe
+; as the menu while that coordinate sits over the character list.
+global navigationDone := false
+
+; A failed step unwinds the run so the calibration fallback can retry it.
+class MacroAbort extends Error {
+    __New(kind, message := "") {
+        super.__New(message)
+        this.kind := kind
+    }
+}
 
 ; ---------------------------------------------------------------------------
 ; Settings (re-read on every run, so no reload is needed after editing)
@@ -490,49 +509,119 @@ Reset(*) {
     global traceEnabled, traceLog
 
     if !traceEnabled
-        return RunMacro()
+        return RunCalibrated()
 
     traceLog := []
     t0 := Qpc()
     try
-        RunMacro()
+        RunCalibrated()
     finally {
         traceLog.Push(Format("{:8.1f} ms  TOTAL", Qpc() - t0))
         FlushTrace()
     }
 }
 
-RunMacro() {
+; Run with the configured screenSpace; a failed run that changed nothing in
+; game is retried with the other calibrations. The first run that completes
+; wins; a run that stops on its own (focus lost, bad setting) is not retried.
+RunCalibrated() {
+    global screenSpace, destructiveDone, navigationDone, stepProgress
+    global traceEnabled, traceLog
+
+    ; Report the failure from the attempt that got furthest: the attempts share
+    ; the same steps, so that is the one the calibration change did not fix.
+    bestFailure := 0
+    bestProgress := -1
+    used := -1
+    tried := []
+    navigationDone := false
+
+    for space in [-1, 0, 1, 2, 3, 4] {
+        if (used >= 0 && space = used)
+            continue
+        tried.Push(space)
+        if traceEnabled
+            traceLog.Push(Format("            attempt screenSpace {}"
+                , space < 0 ? "settings" : space))
+        destructiveDone := false
+        try {
+            ; A run that stopped on its own has no calibration to save.
+            if !RunMacro(space)
+                return
+            if (space >= 0)
+                SaveScreenSpace(space)
+            return
+        } catch as err {
+            if !(err is MacroAbort)
+                throw err
+            if (err.kind = "focus")
+                return
+            ; The retry would have to repeat Save and Exit; not safe, so report
+            ; the step that failed instead.
+            if (err.kind = "navigated")
+                break
+            ; A failure after a delete is the one worth reporting, not an
+            ; earlier attempt's.
+            if destructiveDone {
+                bestFailure := err
+                break
+            }
+            if (stepProgress > bestProgress) {
+                bestFailure := err
+                bestProgress := stepProgress
+            }
+            ; Remember the configured value so it is not retried.
+            if (used < 0)
+                used := screenSpace
+        }
+    }
+    message := bestFailure ? bestFailure.message : "Run aborted before a step failed."
+    ; Say which calibrations were tried, so a run that never retried is
+    ; distinguishable from one that retried and failed everywhere.
+    if (tried.Length > 1) {
+        names := ""
+        for t in tried
+            names .= (names = "" ? "" : ", ") . (t < 0 ? "settings" : t)
+        message .= "`n`nCalibrations tried: " . names
+    }
+    Fail(message)
+}
+
+RunMacro(space := -1) {
     global winTitle, winExpr, TARGET_ASPECT, ASPECT_TOLERANCE, MAX_NAME_LEN
     global Coords, Regions, classNames, classicClasses, versionNames, versionRow3, versionRow2
     global name, hero, version, delete, hardcore, screenSpace
+    global destructiveDone, navigationDone
     global liveSplitResetHotkey, liveSplitStartHotkey
-    global hwnd, cw, ch, lastProbeDetail, CAPTURE_DIR
+    global hwnd, cw, ch, lastProbeDetail, CAPTURE_DIR, stepProgress
 
     CoordMode("Mouse", "Client")
     CoordMode("Pixel", "Client")
     lastProbeDetail := ""
+    stepProgress := 0
 
     ; A stray hotkey press while alt-tabbed (or with D2R not running) does
     ; nothing.
     hwnd := WinExist(winExpr)
     if !GameActive()
-        return
+        return 0
 
     try
         ReadSettings()
     catch as err {
         Fail("Could not read settings.ini: " . err.Message)
-        return
+        return 0
     }
+    if (space >= 0)
+        screenSpace := space
 
     if (delete != "0" && delete != "1") {
         Fail("Invalid delete '" . delete . "' in settings.ini.`nUse 0 or 1.")
-        return
+        return 0
     }
     if (hardcore != "0" && hardcore != "1") {
         Fail("Invalid hardcore '" . hardcore . "' in settings.ini.`nUse 0 or 1.")
-        return
+        return 0
     }
     deleteFlag := (delete = "1")
     hardcoreFlag := (hardcore = "1")
@@ -553,7 +642,7 @@ RunMacro() {
     }
     if (heroKey = "") {
         Fail("Invalid hero '" . hero . "' in settings.ini.`nUse 1-8 or a class name.")
-        return
+        return 0
     }
     hero := heroKey
 
@@ -575,17 +664,14 @@ RunMacro() {
     }
     if !versionRow3.Has(version) {
         Fail("Invalid version '" . version . "' in settings.ini.`nUse 1-3 or reign, expansion or classic.")
-        return
+        return 0
     }
 
-    if !IsInteger(screenSpace) {
-        Fail("Invalid screenSpace '" . screenSpace . "' in settings.ini.`nUse 0-4.")
-        return
-    }
-    screenSpace := Integer(screenSpace)
+    rawSpace := screenSpace
+    screenSpace := IsInteger(screenSpace) ? Integer(screenSpace) : -1
     if (screenSpace < 0 || screenSpace > 4) {
-        Fail("Invalid screenSpace '" . screenSpace . "' in settings.ini.`nUse 0-4.")
-        return
+        Fail("Invalid screenSpace '" . rawSpace . "' in settings.ini.`nUse 0-4.")
+        return 0
     }
 
     classicClassFlag := false
@@ -609,12 +695,12 @@ RunMacro() {
     ch := NumGet(rc, 12, "Int")
     if (cw = 0 || ch = 0) {
         Fail("Could not read the game's client size.")
-        return
+        return 0
     }
 
     if (Abs(cw / ch - TARGET_ASPECT) / TARGET_ASPECT > ASPECT_TOLERANCE) {
         Fail("Client size " . cw . "x" . ch . " is not 16:9.`nCheck the window mode / resolution.")
-        return
+        return 0
     }
 
     ; Character name: delete=0 gets a short prefix, delete=1 reuses the name.
@@ -632,17 +718,17 @@ RunMacro() {
     charName := SubStr(charName, 1, MAX_NAME_LEN)
     if (StrLen(charName) < 2) {
         Fail("Character name '" . charName . "' is too short.`nUse 1-16 letters.")
-        return
+        return 0
     }
 
     BuildMetrics()
 
     ; --- Start state -------------------------------------------------------
-    ; Resume from whichever screen D2R is on.
+    ; Resume from whichever screen D2R is on. A screen no probe recognises is
+    ; retried by the calibration fallback in Reset.
     startKind := DetectStartState()
     if (startKind = 0) {
-        StepFail("Start", "Could not detect the current screen.`nStart in game, at character select, or on the create screen.`nIf D2R is in exclusive fullscreen, switch to Windowed or Borderless.")
-        return
+        StepFail("Start", "Could not detect the current screen.`nStart in game, at character select, or on the create screen.")
     }
 
     ; The run is at a known screen, so the timer can be reset now.
@@ -653,39 +739,44 @@ RunMacro() {
         ; (chat, inventory, ...) in one click. Esc would only close the chat
         ; and need a second press.
         if !ClickAt("gameMenu")
-            return
+            return 0
         if !WaitFor("game menu", "menu", TRANSITION_TIMEOUT_MS, FADE_SAMPLES, FADE_SETTLE_MS) {
             ; Fallback for a click the game did not accept (e.g. a prompt over
             ; the panel): Esc still opens the menu.
             Send("{Esc}")
             if !WaitFor("game menu", "menu", TRANSITION_TIMEOUT_MS, FADE_SAMPLES, FADE_SETTLE_MS) {
                 StepFail("Game menu", "The game menu did not appear.")
-                return
             }
         }
     }
 
     ; --- Navigate to character select when needed --------------------------
-    ; Save and Exit and Back are not retried: their only safe gate ("still on
-    ; the menu") also matches the loading screen, and a repeat could land on
-    ; character select and pick a different character.
+    ; Save and Exit is not retried: its only safe gate ("still on the menu")
+    ; also matches the loading screen, and a repeat would land on the character
+    ; list and pick a different character. Back is retried by the calibration
+    ; fallback: its coordinate is outside the character list, so a repeat that
+    ; lands on character select cannot change the selection.
     atCreate := false
     if (startKind = 1 || startKind = 4) {
+        ; A calibration retry must not send this click twice: the first one may
+        ; already have gone through. Stop retrying and report the failed step.
+        if navigationDone
+            throw MacroAbort("navigated")
+        navigationDone := true
         if !ClickAt("saveAndExit")
-            return
+            return 0
         if !WaitFor("Save and Exit", "charSelect", TRANSITION_TIMEOUT_MS, 1) {
             StepFail("Save and Exit", "The character-select screen did not appear.")
-            return
         }
     } else if (startKind = 3) {
         if deleteFlag {
             ; Mid-creation with delete on: go Back, delete, and create again
-            ; from a fresh screen.
+            ; from a fresh screen. A missed click is retried with the next
+            ; calibration; nothing on that path can pick another character.
             if !ClickAt("backBtn")
-                return
+                return 0
             if !WaitFor("Back", "charSelect", TRANSITION_TIMEOUT_MS, 1) {
                 StepFail("Back", "The character-select screen did not appear after Back.")
-                return
             }
         } else {
             ; Continue on the current create screen.
@@ -699,7 +790,6 @@ RunMacro() {
         if !IsNow("offlineSelected") {
             if !ClickThrough("Offline tab", "offlineTab", "charSelect", "offlineSelected", TRANSITION_TIMEOUT_MS) {
                 StepFail("Offline tab", "The offline tab did not become selected.")
-                return
             }
         }
 
@@ -707,17 +797,16 @@ RunMacro() {
         if deleteFlag {
             if !WaitFor("delete button", "deleteButton", TRANSITION_TIMEOUT_MS, 1, FADE_SETTLE_MS) {
                 StepFail("Delete", "The offline character list / delete button did not appear.")
-                return
             }
             ; Not retried: a second click on the modal prompt could cancel it.
+            destructiveDone := true
             if !ClickAt("deleteButton")
-                return
+                return 0
             ; The prompt fades in; hold only once it stops moving, because a
             ; press swallowed by the animation is lost.
             if !WaitFor("delete confirmation", "dialog", DIALOG_TIMEOUT_MS, FADE_SAMPLES, DELETE_SETTLE_MS) {
                 SaveCapture("delete-dialog")
                 StepFail("Delete", "The delete-confirmation prompt did not appear.`nA screenshot was saved under the " CAPTURE_DIR " folder.")
-                return
             }
 
             ; The game needs a long press (~5 s); release commits it. The end of
@@ -727,7 +816,6 @@ RunMacro() {
             Loop DELETE_ATTEMPTS {
                 if !HoldFor("deleteConfirm", DELETE_HOLD_MS) {
                     StepFail("Delete", "Lost focus while holding the delete button.")
-                    return
                 }
                 if WaitFor("delete prompt closed", "dialogGone", DELETE_TIMEOUT_MS, 1) {
                     closed := true
@@ -741,20 +829,17 @@ RunMacro() {
             if !closed {
                 SaveCapture("delete-stuck")
                 StepFail("Delete", "The delete prompt did not close after the hold.`nA screenshot was saved under the " CAPTURE_DIR " folder.")
-                return
             }
 
             ; The character list is the reliable post-delete state.
             if !WaitFor("character list", "charSelect", DELETE_TIMEOUT_MS, 1) {
                 StepFail("Delete", "The character list did not return after deleting.")
-                return
             }
         }
 
         ; --- Create New ----------------------------------------------------
         if !ClickThrough("Create New", "createNew", "charSelect", "createScreen", TRANSITION_TIMEOUT_MS) {
             StepFail("Create New", "The character-create screen did not appear.`nThe createNew coordinate may need a click-logger check.")
-            return
         }
     }
 
@@ -763,7 +848,6 @@ RunMacro() {
     ; clicking the class row again is harmless, so a dropped click is retried.
     if !ClickThrough("Class", hero, "createScreen", "nameField", TRANSITION_TIMEOUT_MS) {
         StepFail("Class", "The character name field did not appear after selecting " . hero . ".")
-        return
     }
 
     ; --- Version -----------------------------------------------------------
@@ -771,16 +855,14 @@ RunMacro() {
     if (version != "reign") {
         versionCoord := classicClassFlag ? versionRow3[version] : versionRow2[version]
         if !ClickAt("versionButton")
-            return
+            return 0
         if !WaitFor("version dropdown", "versionOpen", DIALOG_TIMEOUT_MS, FADE_SAMPLES, FADE_SETTLE_MS) {
             StepFail("Version", "The game-version dropdown did not open.")
-            return
         }
         if !ClickAt(versionCoord)
-            return
+            return 0
         if !WaitFor("version accepted", "versionClosed", DIALOG_TIMEOUT_MS, 1) {
             StepFail("Version", "The game-version dropdown did not close after selecting " . version . ".")
-            return
         }
     }
 
@@ -796,49 +878,46 @@ RunMacro() {
     ; loses focus.
     if !ClickThrough("Name", "blurPoint", "createScreen", "createEnabled", DIALOG_TIMEOUT_MS) {
         StepFail("Name", "The Create button did not become ready.`nThe name may be invalid or already in use.")
-        return
     }
 
     ; --- Hardcore ----------------------------------------------------------
     hcState := HardcoreState()
     if (hcState < 0) {
         StepFail("Hardcore", "Could not tell whether the Hardcore skull is selected.")
-        return
     }
     if hardcoreFlag && !hcState {
         if !ClickAt("hardcoreBox")
-            return
+            return 0
         if !WaitFor("hardcore selected", "hcChecked", DIALOG_TIMEOUT_MS, FADE_SAMPLES) {
             StepFail("Hardcore", "The Hardcore skull did not turn on.")
-            return
         }
     } else if !hardcoreFlag && hcState {
         if !ClickAt("hardcoreBox")
-            return
+            return 0
         if !WaitFor("hardcore cleared", "hcUnchecked", DIALOG_TIMEOUT_MS, FADE_SAMPLES) {
             StepFail("Hardcore", "The Hardcore skull did not turn off.")
-            return
         }
     }
 
     ; --- Create ------------------------------------------------------------
+    ; From here the character exists, so a retry could create a second one.
+    destructiveDone := true
     if !ClickAt("createBtn")
-        return
+        return 0
 
     ; The split is sent on the click: the run is over, nothing left to wait for.
     if !hardcoreFlag {
         SendHotkey(liveSplitStartHotkey)
-        return
+        return 1
     }
 
     ; Hardcore confirmation. The OK button is gold-framed (language
     ; independent).
     if !WaitFor("hardcore confirmation", "dialog", DIALOG_TIMEOUT_MS, FADE_SAMPLES, FADE_SETTLE_MS) {
         StepFail("Hardcore OK", "The Hardcore confirmation dialog did not appear.")
-        return
     }
     if !ClickAt("hardcoreOk")
-        return
+        return 0
     SendHotkey(liveSplitStartHotkey)
 
     ; Repair a click swallowed by the fade-in, and report a stuck dialog.
@@ -849,10 +928,11 @@ RunMacro() {
             break
         }
         if !ClickAt("hardcoreOk")
-            return
+            return 0
     }
     if !dismissed
         StepFail("Hardcore OK", "The Hardcore confirmation dialog did not close.")
+    return 1
 }
 
 IniVal(text, section, key, fallback) {
@@ -879,6 +959,11 @@ IniVal(text, section, key, fallback) {
         }
     }
     return fallback
+}
+
+; Persist the working calibration; a read-only file just retries next run.
+SaveScreenSpace(value) {
+    try IniWrite(value, "settings.ini", "Settings", "screenSpace")
 }
 
 ; True while the game window still exists and has focus.
@@ -1081,7 +1166,7 @@ Probe(name) {
             ok := st.goldFrac >= 0.06 && st.redFrac >= 0.05
                 && st.brightFrac >= 0.01
                 && st.sdRatio <= 1.30 && st.meanL >= 10
-            return { ok: ok, sig: Signature(st), detail: StatLine(st) }
+            return Probed(ok, st)
 
         case "createScreen":
             s := StatsBatch(["createBtn", "toggleBtn"])
@@ -1095,53 +1180,58 @@ Probe(name) {
             st := StatsOf("offlineTabText")
             ; Selected tab text is white, unselected is dim grey.
             ok := st.brightFrac >= 0.05 && st.meanL >= 50
-            return { ok: ok, sig: Signature(st), detail: StatLine(st) }
+            return Probed(ok, st)
 
         case "deleteButton":
             st := StatsOf("deleteButton")
             ok := st.redFrac >= RED_ICON_MIN && st.sdRatio <= 1.30 && st.meanL >= 8
-            return { ok: ok, sig: Signature(st), detail: StatLine(st) }
+            return Probed(ok, st)
 
         case "nameField":
             st := StatsOf("nameField")
             ; Gold frame + dark, non-flat interior; the char-select panel at the
             ; same spot is flat.
             ok := st.goldFrac >= 0.03 && st.sdRatio >= 0.80
-            return { ok: ok, sig: Signature(st), detail: StatLine(st) }
+            return Probed(ok, st)
 
         case "versionOpen":
             st := StatsOf("versionListLeft")
-            return { ok: DropdownOpen(st), sig: Signature(st), detail: StatLine(st) }
+            return Probed(DropdownOpen(st), st)
 
         case "versionClosed":
             st := StatsOf("versionListLeft")
-            return { ok: !DropdownOpen(st), sig: Signature(st), detail: StatLine(st) }
+            return Probed(!DropdownOpen(st), st)
 
         case "createEnabled":
             st := StatsOf("createBtn")
             ok := st.goldFrac >= 0.05 && st.sdRatio <= 1.35 && st.meanL >= 8
-            return { ok: ok, sig: Signature(st), detail: StatLine(st) }
+            return Probed(ok, st)
 
         case "hcChecked":
             st := StatsOf("skull")
-            return { ok: st.redFrac >= HC_RED_ON, sig: Signature(st), detail: StatLine(st) }
+            return Probed(st.redFrac >= HC_RED_ON, st)
 
         case "hcUnchecked":
             st := StatsOf("skull")
-            return { ok: st.redFrac <= HC_RED_OFF, sig: Signature(st), detail: StatLine(st) }
+            return Probed(st.redFrac <= HC_RED_OFF, st)
 
             ; Shared by the hardcore and delete confirmation dialogs.
         case "dialog":
             st := StatsOf("dialogButton")
-            return { ok: DialogButton(st), sig: Signature(st), detail: StatLine(st) }
+            return Probed(DialogButton(st), st)
 
         case "dialogGone":
             st := StatsOf("dialogButton")
-            return { ok: !DialogButton(st), sig: Signature(st), detail: StatLine(st) }
+            return Probed(!DialogButton(st), st)
 
         default:
             return { ok: 0, sig: [], detail: "unknown probe " name }
     }
+}
+
+; Probe result: match flag plus the stats used to decide it.
+Probed(ok, st) {
+    return { ok: ok, sig: Signature(st), detail: StatLine(st) }
 }
 
 Signature(st) {
@@ -1171,7 +1261,7 @@ IsNow(probeName) {
     return Probe(probeName).ok
 }
 
-; 0 = unknown, 1 = in game, 2 = character select, 3 = create screen, 4 = menu.
+; 0 = none, 1 = in game, 2 = character select, 3 = create screen, 4 = menu.
 ; Menu first: the Esc menu keeps the HUD and the class row visible.
 DetectStartState() {
     if Probe("menu").ok
@@ -1196,7 +1286,7 @@ DetectStartState() {
 ; fade-in from one still in progress. Returns 1/0; on timeout the last stats are
 ; kept for StepFail().
 WaitFor(name, probeName, timeoutMs, samples := 2, stableMs := 0) {
-    global lastProbeDetail, lastGrabFailed
+    global lastProbeDetail, lastGrabFailed, stepProgress
     global POLL_FAST_MS, POLL_SLOW_MS, POLL_FAST_WINDOW_MS
     global traceEnabled, traceLog
 
@@ -1255,6 +1345,8 @@ WaitFor(name, probeName, timeoutMs, samples := 2, stableMs := 0) {
         traceLog.Push(Format("{:8.1f} ms  {} {:5d} ms  {}  ({} probes{})"
             , Qpc() - t0, result ? "ok  " : "FAIL", timeoutMs, name, polls, detail))
     }
+    if result
+        stepProgress += 1
     return result
 }
 
@@ -1285,9 +1377,9 @@ StepFail(step, message) {
     global lastProbeDetail
     ; Alt-tab is a normal abort: do not steal focus with a message box.
     if (lastProbeDetail = "game lost focus")
-        return
+        throw MacroAbort("focus")
     detail := (lastProbeDetail != "") ? "`n`nLast pixel state:`n" . lastProbeDetail : ""
-    Fail(step . "`n`n" . message . detail)
+    throw MacroAbort("step", step . "`n`n" . message . detail)
 }
 
 SaveCapture(tag) {

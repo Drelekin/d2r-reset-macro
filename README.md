@@ -1,33 +1,34 @@
 # d2r-reset-macro
 
-Automates D2R character resets. Start in game and press the hotkey: the macro
-opens the game menu, saves and exits, optionally deletes the current character,
-then creates a new one from `settings.ini`. It only runs while D2R is focused;
-losing focus aborts the run.
+Automates D2R character resets. Press the hotkey in game: the macro opens the
+game menu, saves and exits, optionally deletes the character, then creates a
+new one from `settings.ini`. It aborts if D2R loses focus.
 
-Flow: HUD Game Menu button -> Save and Exit -> (offline tab -> delete) -> Create
-New -> class -> version -> name -> (hardcore) -> Create -> (hardcore
-confirmation). It stops on the final click and does not wait for the loading
-screen. The menu button also closes an open chat box or panel, so the run does
-not need to start from a clean screen.
+Flow: Game Menu -> Save and Exit -> (delete) -> Create New -> class -> version
+-> name -> (hardcore) -> Create -> (hardcore confirmation). It stops after the
+final click and does not wait for the loading screen. The Game Menu button also
+closes an open chat box or panel, so it doesn't matter what screen you start
+from.
 
 ## Requirements
 
 - AutoHotkey v2.0+
-- D2R in windowed or borderless mode at any 16:9 resolution
+- D2R in Windowed or Fullscreen at any 16:9 resolution
 - Screen Space Calibration 0-4 (0 is the calibrated baseline)
-
-Exclusive fullscreen can produce black captures; use windowed or borderless.
 
 ## Setup
 
-Edit `settings.ini`, then run `d2r-reset-macro.ahk`. Press the configured macro
-hotkey in game. Hotkey changes are picked up automatically; other changes apply
-on the next run.
+Edit `settings.ini` and run `d2r-reset-macro.ahk`, then press the macro hotkey
+in game. Hotkey changes apply immediately; other changes on the next run.
 
 You can start in game, at the Esc menu, on character select, or on the
-character-create screen. With `delete=1`, make sure the throwaway character is
+character-create screen. With `delete=1` the throwaway character must be
 selected first.
+
+If a run fails before changing anything in game, the macro retries the other
+`screenSpace` values and saves the first that works. Save and Exit is never
+repeated, failures after a delete or the Create click are reported directly,
+and `settings.ini` is only written when a run completes.
 
 ## settings.ini
 
@@ -56,31 +57,25 @@ AutoHotkey64.exe d2r-reset-macro.ahk --probe
 AutoHotkey64.exe d2r-reset-macro.ahk --probe --shot
 ```
 
-`--probe` prints probe results and exits; `--shot` also saves a screenshot.
-Probe mode replaces a running macro, so start it again afterwards. Use `--probe`
-after changing `screenSpace` or a resolution to confirm every screen still
-probes as expected.
+`--probe` prints results and exits, `--shot` also saves a screenshot. Probe
+replaces a running macro. Run it after changing `screenSpace` or resolution.
 
-`--trace` (add to the normal run) records how long every wait took and writes
-`captures\<stamp>-trace.txt` when the run ends. Each line also shows when the
-probe matched (`first=`) and how much of the wait was the fade settle (`held=`),
-so a slow step can be told apart from a slow animation.
+`--trace` on a normal run logs every wait to `captures\<stamp>-trace.txt`, with
+`first=` (when the probe matched) and `held=` (fade settle) per step; a
+calibration retry adds an `attempt screenSpace <n>` line.
 
-If the delete step fails, the macro saves a screenshot of the delete prompt
-(`captures\<stamp>-delete-dialog.bmp` or `<stamp>-delete-stuck.bmp`), and the
-error box prints the last pixel state of the failed probe.
+Delete failures save `captures\<stamp>-delete-dialog.bmp` or
+`<stamp>-delete-stuck.bmp`, and the error box prints the last pixel state. After
+a calibration retry it also lists the `screenSpace` values that were tried.
 
 ## Notes
 
-- A probe reads only the regions it needs, all in one capture, so a poll costs
-  about one display frame.
-- Controls that fade in must hold for `FADE_SAMPLES` frames and then keep the
-  same signature for `FADE_SETTLE_MS` before they are clicked; a click started
-  mid-animation can be swallowed.
-- Probe thresholds must key off areas (a fill, a frame), never thin strokes:
-  glyph fractions change with `SAMPLE_CAP` and the resolution.
-- The hold-to-delete press (`DELETE_HOLD_MS`) is a game requirement and is the
-  largest single cost of a run.
+- A probe captures once and reads only its regions, so a poll costs about a frame.
+- Fading controls must hold `FADE_SAMPLES` frames, then stay stable for
+  `FADE_SETTLE_MS`; a click started mid-animation can be swallowed.
+- Thresholds key off areas (a fill, a frame), never thin strokes, since glyph
+  fractions shift with `SAMPLE_CAP` and resolution.
+- `DELETE_HOLD_MS` is a game requirement and the largest cost of a run.
 
 ## License
 
